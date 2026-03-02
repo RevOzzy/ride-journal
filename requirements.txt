@@ -1,0 +1,7 @@
+flask
+gpxpy
+Pillow
+piexif
+anthropic
+folium
+python-dotenv

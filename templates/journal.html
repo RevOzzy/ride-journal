@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ride Journal — {{ date }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange: #E8521A;
+      --dark: #1a1a1a;
+      --mid: #2d2d2d;
+      --light: #f5f5f0;
+      --text: #222;
+      --muted: #777;
+    }
+
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      background: var(--dark);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    /* ── Map hero ── */
+    .map-hero {
+      width: 100%;
+      height: 480px;
+      position: relative;
+      background: #222;
+      overflow: hidden;
+    }
+    .map-hero iframe,
+    .map-hero > div {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    /* folium embeds an iframe — make it fill */
+    .map-hero iframe { border: none; }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      background: var(--dark);
+      color: white;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0;
+      flex-wrap: wrap;
+    }
+    .stat {
+      padding: 1.1rem 2rem;
+      text-align: center;
+      border-right: 1px solid #333;
+    }
+    .stat:last-child { border-right: none; }
+    .stat .val {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: var(--orange);
+      letter-spacing: -0.02em;
+    }
+    .stat .lbl {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.7rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-top: 0.1rem;
+    }
+
+    /* ── Content area ── */
+    .content-wrap {
+      background: var(--light);
+      min-height: 100vh;
+    }
+
+    .article {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+    }
+
+    .ride-date {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 0.5rem;
+    }
+
+    .article h1 {
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 2rem;
+      color: var(--dark);
+    }
+
+    .narrative p {
+      margin-bottom: 1.4rem;
+      font-size: 1.05rem;
+      color: #333;
+    }
+    .narrative p:first-child::first-letter {
+      float: left;
+      font-size: 3.8rem;
+      line-height: 0.8;
+      margin: 0.1em 0.08em 0 0;
+      color: var(--orange);
+      font-weight: 700;
+    }
+
+    /* ── Photo gallery ── */
+    .gallery {
+      margin-top: 3rem;
+    }
+    .gallery h2 {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 1.25rem;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 0.5rem;
+    }
+
+    .photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .photo-item {
+      position: relative;
+      overflow: hidden;
+      border-radius: 4px;
+      background: #ddd;
+      aspect-ratio: 4/3;
+      cursor: pointer;
+    }
+    .photo-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      transition: transform 0.3s ease;
+    }
+    .photo-item:hover img { transform: scale(1.03); }
+    .photo-item .mile-badge {
+      position: absolute;
+      bottom: 6px;
+      right: 8px;
+      background: rgba(0,0,0,0.6);
+      color: white;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    /* Wide photos — every 3rd takes full width */
+    .photo-item:nth-child(5n+1) {
+      grid-column: span 2;
+      aspect-ratio: 16/9;
+    }
+
+    /* ── Lightbox ── */
+    #lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.92);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
+      padding: 2rem;
+    }
+    #lightbox.open { display: flex; }
+    #lightbox img {
+      max-width: 90vw;
+      max-height: 85vh;
+      object-fit: contain;
+      border-radius: 4px;
+    }
+    #lightbox .close-btn {
+      position: fixed;
+      top: 1rem;
+      right: 1.5rem;
+      color: white;
+      font-size: 2rem;
+      cursor: pointer;
+      background: none;
+      border: none;
+      line-height: 1;
+    }
+    #lightbox .lb-nav {
+      display: flex;
+      gap: 1.5rem;
+    }
+    #lightbox .lb-nav button {
+      background: rgba(255,255,255,0.15);
+      color: white;
+      border: none;
+      padding: 0.5rem 1.2rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    #lightbox .lb-nav button:hover { background: rgba(255,255,255,0.3); }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--dark);
+      color: #555;
+      text-align: center;
+      padding: 2rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.78rem;
+    }
+
+    @media (max-width: 600px) {
+      .stats-bar { flex-direction: row; flex-wrap: wrap; }
+      .stat { flex: 1 1 45%; border-right: none; border-bottom: 1px solid #333; }
+      .photo-item:nth-child(5n+1) { grid-column: span 1; aspect-ratio: 4/3; }
+      .photo-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Map -->
+<div class="map-hero">
+  {{ map_html | safe }}
+</div>
+
+<!-- Stats bar -->
+<div class="stats-bar">
+  <div class="stat">
+    <div class="val">{{ distance_miles }}</div>
+    <div class="lbl">Miles</div>
+  </div>
+  {% if elevation_ft %}
+  <div class="stat">
+    <div class="val">{{ "{:,}".format(elevation_ft) }}</div>
+    <div class="lbl">Ft Elevation</div>
+  </div>
+  {% endif %}
+  {% if duration %}
+  <div class="stat">
+    <div class="val">{{ duration }}</div>
+    <div class="lbl">Ride Time</div>
+  </div>
+  {% endif %}
+  <div class="stat">
+    <div class="val">{{ photos | length }}</div>
+    <div class="lbl">Photos</div>
+  </div>
+</div>
+
+<!-- Content -->
+<div class="content-wrap">
+  <div class="article">
+    <div class="ride-date">{{ date }}</div>
+    <h1>{{ distance_miles }} Miles on the Pan America</h1>
+
+    <div class="narrative">
+      {{ narrative | safe }}
+    </div>
+
+    {% if photos %}
+    <div class="gallery">
+      <h2>From the Road — {{ photos | length }} Photos</h2>
+      <div class="photo-grid" id="photo-grid">
+        {% for photo in photos %}
+        <div class="photo-item" onclick="openLightbox({{ loop.index0 }})">
+          <img src="{{ photo.data_uri }}" alt="Mile {{ photo.miles }}" loading="lazy" />
+          <span class="mile-badge">Mile {{ photo.miles }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<footer>
+  Generated with Ride Journal Generator &nbsp;·&nbsp; {{ date }}
+</footer>
+
+<!-- Lightbox -->
+<div id="lightbox">
+  <button class="close-btn" onclick="closeLightbox()">✕</button>
+  <img id="lb-img" src="" alt="" />
+  <div class="lb-nav">
+    <button onclick="lbNav(-1)">← Prev</button>
+    <button onclick="lbNav(1)">Next →</button>
+  </div>
+</div>
+
+<script>
+// ── Lightbox ──
+const photos = [
+  {% for photo in photos %}
+  { src: "{{ photo.data_uri }}", miles: {{ photo.miles }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+let currentIdx = 0;
+
+function openLightbox(idx) {
+  currentIdx = idx;
+  document.getElementById("lb-img").src = photos[idx].src;
+  document.getElementById("lightbox").classList.add("open");
+}
+
+function closeLightbox() {
+  document.getElementById("lightbox").classList.remove("open");
+}
+
+function lbNav(dir) {
+  currentIdx = (currentIdx + dir + photos.length) % photos.length;
+  document.getElementById("lb-img").src = photos[currentIdx].src;
+}
+
+document.getElementById("lightbox").addEventListener("click", function(e) {
+  if (e.target === this) closeLightbox();
+});
+
+document.addEventListener("keydown", function(e) {
+  const lb = document.getElementById("lightbox");
+  if (!lb.classList.contains("open")) return;
+  if (e.key === "Escape") closeLightbox();
+  if (e.key === "ArrowLeft") lbNav(-1);
+  if (e.key === "ArrowRight") lbNav(1);
+});
+</script>
+</body>
+</html>
