@@ -137,7 +137,7 @@ def match_photos_to_route(photo_dir: str, track_points: list, tz_offset_hours: f
                 if best_dist is None or d < best_dist:
                     best_dist = d
                     best_pt = pt
-            if best_dist is not None and best_dist < 0.5:  # within 500m
+            if best_dist is not None and best_dist < 2.0:  # within 2km
                 track_pt = best_pt
                 matched_by = "gps"
 
@@ -159,6 +159,9 @@ def match_photos_to_route(photo_dir: str, track_points: list, tz_offset_hours: f
 
     if unmatched:
         print(f"[photo_matcher] {len(unmatched)} photos could not be matched: {unmatched[:5]}{'...' if len(unmatched) > 5 else ''}")
+
+    for p in matched:
+        print(f"[photo_matcher] {p['filename']}: matched_by={p['matched_by']} km={p['km']:.1f} ts={p['timestamp']}")
 
     # Sort by position along route
     matched.sort(key=lambda x: x["km"])

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Add Photos to Post</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a1a; color: #eee; min-height: 100vh; }
+    header { background: #111; padding: 1.25rem 2rem; display: flex; align-items: center; gap: 1rem; border-bottom: 1px solid #333; }
+    header h1 { font-size: 1rem; font-weight: 600; color: #E8521A; }
+    header .sub { font-size: 0.8rem; color: #888; margin-top: 0.1rem; }
+    .container { max-width: 600px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .card { background: #242424; border: 1px solid #333; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.25rem; }
+    .card h2 { font-size: 0.95rem; font-weight: 600; margin-bottom: 1rem; color: #E8521A; }
+    .drop-zone { border: 2px dashed #444; border-radius: 8px; padding: 2rem; text-align: center; cursor: pointer; transition: border-color 0.2s; position: relative; }
+    .drop-zone:hover, .drop-zone.dragging { border-color: #E8521A; background: #1f1a18; }
+    .drop-zone.has-file { border-color: #4caf50; }
+    .drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+    .drop-zone .icon { font-size: 2rem; margin-bottom: 0.5rem; }
+    .drop-zone .lbl { font-weight: 600; }
+    .drop-zone .hint { font-size: 0.8rem; color: #888; margin-top: 0.25rem; }
+    .info { background: #1a2030; border: 1px solid #2a4a6a; border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.85rem; color: #7aaad0; margin-bottom: 1.25rem; }
+    .btn-upload { width: 100%; padding: 0.85rem; background: #E8521A; color: white; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-upload:hover { background: #d4481a; }
+    .btn-upload:disabled { background: #555; cursor: not-allowed; }
+    .progress { display: none; margin-top: 1.25rem; }
+    .progress-bar-wrap { background: #333; border-radius: 4px; height: 8px; margin: 0.75rem 0; overflow: hidden; }
+    .progress-bar { height: 100%; background: #E8521A; transition: width 0.3s; width: 0%; }
+    .progress-msg { font-size: 0.9rem; color: #aaa; }
+    .result { display: none; margin-top: 1.25rem; background: #1a2a1a; border: 1px solid #2a5a2a; border-radius: 8px; padding: 1.25rem; }
+    .result h3 { color: #6aaa6a; margin-bottom: 0.75rem; }
+    .btn-view { display: inline-block; padding: 0.6rem 1.5rem; background: #333; color: #eee; border-radius: 6px; text-decoration: none; font-size: 0.9rem; }
+    .btn-view:hover { background: #444; }
+    .error { display: none; margin-top: 1.25rem; background: #2a1a1a; border: 1px solid #7a2020; border-radius: 8px; padding: 1.25rem; color: #f88; font-size: 0.9rem; }
+    .btn-back { color: #888; text-decoration: none; font-size: 0.9rem; display: inline-block; margin-top: 1rem; }
+    .btn-back:hover { color: #eee; }
+  </style>
+</head>
+<body>
+<header>
+  <div style="font-size:1.4rem">📸</div>
+  <div>
+    <h1>Add Photos to Post #{{ wp_post_id }}</h1>
+    <div class="sub">{{ filename }}</div>
+  </div>
+</header>
+<div class="container">
+
+  <div class="info">
+    Photos you upload here will be added to the gallery on the existing WordPress post.
+    Full-res photos are fine — they'll be resized before uploading.
+  </div>
+
+  <div class="card">
+    <h2>Select Photos</h2>
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="photo-input" accept=".jpg,.jpeg" multiple />
+      <div class="icon">📷</div>
+      <div class="lbl" id="drop-label">Drop photos here or click to browse</div>
+      <div class="hint">JPEGs only — Sony RAW, iPhone, whatever you've got</div>
+    </div>
+  </div>
+
+  <button class="btn-upload" id="upload-btn" onclick="startUpload()" disabled>
+    Add to Post
+  </button>
+
+  <div class="progress" id="progress">
+    <div class="progress-msg" id="progress-msg">Starting...</div>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+  </div>
+
+  <div class="result" id="result">
+    <h3>✅ Photos Added!</h3>
+    <p id="result-msg"></p>
+    <a href="#" id="result-link" class="btn-view" target="_blank">View Post →</a>
+  </div>
+
+  <div class="error" id="error-box"></div>
+
+  <a href="/" class="btn-back">← Back</a>
+</div>
+
+<script>
+const input = document.getElementById("photo-input");
+const dropZone = document.getElementById("drop-zone");
+const dropLabel = document.getElementById("drop-label");
+const btn = document.getElementById("upload-btn");
+
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragging"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
+dropZone.addEventListener("drop", e => {
+  e.preventDefault();
+  dropZone.classList.remove("dragging");
+  try { const dt = new DataTransfer(); for (const f of e.dataTransfer.files) dt.items.add(f); input.files = dt.files; } catch {}
+  updateLabel(input.files);
+});
+input.addEventListener("change", () => updateLabel(input.files));
+
+function updateLabel(files) {
+  if (!files || !files.length) return;
+  dropZone.classList.add("has-file");
+  dropLabel.textContent = `${files.length} photo${files.length !== 1 ? "s" : ""} selected`;
+  btn.disabled = false;
+}
+
+async function startUpload() {
+  btn.disabled = true;
+  document.getElementById("progress").style.display = "block";
+  document.getElementById("result").style.display = "none";
+  document.getElementById("error-box").style.display = "none";
+
+  const formData = new FormData();
+  for (const file of input.files) formData.append("photos", file);
+
+  try {
+    const resp = await fetch("/add-photos/{{ filename }}", { method: "POST", body: formData });
+    if (!resp.ok) { showError("Server error " + resp.status); return; }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (data.error) { showError(data.error); return; }
+
+        if (data.step === "upload") {
+          const pct = Math.round((data.current / data.total) * 85);
+          document.getElementById("progress-bar").style.width = pct + "%";
+          document.getElementById("progress-msg").textContent =
+            `Uploading photo ${data.current} of ${data.total}...`;
+        }
+
+        if (data.step === "updating_post") {
+          document.getElementById("progress-bar").style.width = "95%";
+          document.getElementById("progress-msg").textContent = "Updating post...";
+        }
+
+        if (data.success) {
+          document.getElementById("progress-bar").style.width = "100%";
+          document.getElementById("progress").style.display = "none";
+          document.getElementById("result").style.display = "block";
+          document.getElementById("result-msg").textContent =
+            `${data.added} photo${data.added !== 1 ? "s" : ""} added to the post.`;
+          document.getElementById("result-link").href = data.post_url;
+        }
+      }
+    }
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showError(msg) {
+  document.getElementById("progress").style.display = "none";
+  const el = document.getElementById("error-box");
+  el.style.display = "block";
+  el.textContent = "Error: " + msg;
+  btn.disabled = false;
+}
+</script>
+</body>
+</html>

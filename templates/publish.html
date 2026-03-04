@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Publish to WordPress</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a1a; color: #eee; min-height: 100vh; }
+    header { background: #111; padding: 1.25rem 2rem; display: flex; align-items: center; gap: 1rem; border-bottom: 1px solid #333; }
+    header h1 { font-size: 1rem; font-weight: 600; color: #E8521A; }
+    header .sub { font-size: 0.8rem; color: #888; margin-top: 0.1rem; }
+    .container { max-width: 600px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .card { background: #242424; border: 1px solid #333; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.25rem; }
+    label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.4rem; }
+    input[type="text"] { width: 100%; padding: 0.6rem 0.8rem; background: #1a1a1a; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 1rem; }
+    input[type="text"]:focus { outline: none; border-color: #E8521A; }
+    .radio-group { display: flex; gap: 1rem; margin-top: 0.5rem; }
+    .radio-group label { display: flex; align-items: center; gap: 0.4rem; color: #ccc; cursor: pointer; font-size: 0.95rem; }
+    .meta { font-size: 0.85rem; color: #888; margin-bottom: 0.75rem; }
+    .already-published { background: #1a2a1a; border: 1px solid #2a5a2a; border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.85rem; color: #6aaa6a; margin-bottom: 1.25rem; }
+    .btn-publish { width: 100%; padding: 0.85rem; background: #E8521A; color: white; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    .btn-publish:hover { background: #d4481a; }
+    .btn-publish:disabled { background: #555; cursor: not-allowed; }
+    .progress { display: none; margin-top: 1.25rem; }
+    .progress-bar-wrap { background: #333; border-radius: 4px; height: 8px; margin: 0.75rem 0; overflow: hidden; }
+    .progress-bar { height: 100%; background: #E8521A; transition: width 0.3s; width: 0%; }
+    .progress-msg { font-size: 0.9rem; color: #aaa; }
+    .result { display: none; margin-top: 1.25rem; background: #1a2a1a; border: 1px solid #2a5a2a; border-radius: 8px; padding: 1.25rem; }
+    .result h3 { color: #6aaa6a; margin-bottom: 0.75rem; }
+    .btn-view { display: inline-block; padding: 0.6rem 1.5rem; background: #333; color: #eee; border-radius: 6px; text-decoration: none; font-size: 0.9rem; margin-top: 0.5rem; }
+    .btn-view:hover { background: #444; }
+    .error { display: none; margin-top: 1.25rem; background: #2a1a1a; border: 1px solid #7a2020; border-radius: 8px; padding: 1.25rem; color: #f88; font-size: 0.9rem; }
+    .actions { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; }
+    .btn-back { color: #888; text-decoration: none; font-size: 0.9rem; }
+    .btn-back:hover { color: #eee; }
+  </style>
+</head>
+<body>
+<header>
+  <div style="font-size:1.4rem">🏍</div>
+  <div>
+    <h1>Publish to goadventureride.com</h1>
+    <div class="sub">{{ filename }}</div>
+  </div>
+</header>
+<div class="container">
+
+  {% if wp_post_id %}
+  <div class="already-published">
+    ✔ Already published as post #{{ wp_post_id }} — publishing again will create a new post.
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="meta">
+      {{ date }}{% if distance %} &nbsp;·&nbsp; {{ distance }} miles{% endif %}
+      &nbsp;·&nbsp; {{ photos | length }} photo{{ 's' if photos | length != 1 else '' }}
+    </div>
+
+    <div style="margin-bottom:1.25rem">
+      <label for="post-title">Post Title</label>
+      <input type="text" id="post-title" value="{{ auto_title }}" />
+    </div>
+
+    <div>
+      <label>Status</label>
+      <div class="radio-group">
+        <label><input type="radio" name="status" value="publish" checked> Publish now</label>
+        <label><input type="radio" name="status" value="draft"> Save as draft</label>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn-publish" id="publish-btn" onclick="startPublish()">
+    Publish to WordPress
+  </button>
+
+  <div class="progress" id="progress">
+    <div class="progress-msg" id="progress-msg">Starting...</div>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="progress-bar"></div></div>
+  </div>
+
+  <div class="result" id="result">
+    <h3>✅ Published!</h3>
+    <p id="result-msg"></p>
+    <a href="#" id="result-link" class="btn-view" target="_blank">View Post →</a>
+  </div>
+
+  <div class="error" id="error-box"></div>
+
+  <div class="actions">
+    <a href="/" class="btn-back">← Back</a>
+  </div>
+</div>
+
+<script>
+const totalPhotos = {{ photos | length }};
+
+async function startPublish() {
+  const title = document.getElementById("post-title").value.trim();
+  const status = document.querySelector('input[name="status"]:checked').value;
+  const btn = document.getElementById("publish-btn");
+
+  btn.disabled = true;
+  document.getElementById("progress").style.display = "block";
+  document.getElementById("result").style.display = "none";
+  document.getElementById("error-box").style.display = "none";
+
+  const formData = new FormData();
+  formData.append("title", title);
+  formData.append("status", status);
+
+  try {
+    const resp = await fetch("/publish/{{ filename }}", { method: "POST", body: formData });
+    if (!resp.ok) { showError("Server error " + resp.status); return; }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (data.error) { showError(data.error); return; }
+
+        if (data.step === "upload") {
+          const pct = Math.round((data.current / data.total) * 85);
+          document.getElementById("progress-bar").style.width = pct + "%";
+          document.getElementById("progress-msg").textContent =
+            `Uploading photo ${data.current} of ${data.total}...`;
+        }
+
+        if (data.step === "creating_post") {
+          document.getElementById("progress-bar").style.width = "90%";
+          document.getElementById("progress-msg").textContent = "Creating post...";
+        }
+
+        if (data.success) {
+          document.getElementById("progress-bar").style.width = "100%";
+          document.getElementById("progress").style.display = "none";
+          document.getElementById("result").style.display = "block";
+          document.getElementById("result-msg").textContent =
+            `Post #${data.post_id} created successfully.`;
+          document.getElementById("result-link").href = data.post_url;
+        }
+      }
+    }
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showError(msg) {
+  document.getElementById("progress").style.display = "none";
+  const el = document.getElementById("error-box");
+  el.style.display = "block";
+  el.textContent = "Error: " + msg;
+  document.getElementById("publish-btn").disabled = false;
+}
+</script>
+</body>
+</html>

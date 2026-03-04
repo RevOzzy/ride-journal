@@ -128,7 +128,7 @@
       background: white;
       color: var(--text);
     }
-    .field select:focus, .field input:focus {
+    .field select:focus, .field input:focus, .field textarea:focus {
       outline: none;
       border-color: var(--orange);
     }
@@ -310,9 +310,20 @@
           <option value="2">UTC+2</option>
         </select>
         <div class="desc">
-          If your camera clock wasn't set to UTC, choose its actual timezone so photos match up to the route.
-          iPhone photos usually have GPS coords embedded and don't need this.
+          Match this to wherever you were riding — not your home timezone.
+          iPhone photos with GPS don't need this. Sony and other cameras without GPS rely on this to place photos correctly on the route.
         </div>
+      </div>
+    </div>
+
+    <!-- Rider Notes -->
+    <div class="card">
+      <h2>4. Your Notes <span style="font-weight:400;color:var(--muted);font-size:0.85rem">(optional)</span></h2>
+      <div class="field">
+        <textarea name="rider_notes" id="rider-notes" rows="5"
+          placeholder="Tell the AI what happened on this ride — landmarks, stops, funny moments, how the weather felt, what roads you took. The more you write, the better the narrative. Example: 'Started in Richmond, stopped at the Appomattox Court House around mile 90, had lunch in Farmville, hit rain on the way back through Amelia.'"
+          style="width:100%;padding:0.6rem 0.75rem;border:1px solid #ddd;border-radius:var(--radius);font-size:0.9rem;font-family:inherit;resize:vertical;color:var(--text);background:white;"></textarea>
+        <div class="desc">The AI uses your notes as ground truth — places, sequence of events, and anything the GPS data might get wrong.</div>
       </div>
     </div>
 
@@ -340,7 +351,7 @@
       </li>
     </ul>
     <p style="margin-top:1rem;font-size:0.8rem;color:var(--muted)">
-      AI steps take 30-90 seconds depending on photo count. Don't close this tab.
+      Steps update in real time. AI culling takes longest — keep this tab open.
     </p>
   </div>
 
@@ -350,6 +361,13 @@
       <h3>✅ Journal Ready!</h3>
       <div class="result-stats" id="result-stats"></div>
       <a href="#" id="view-link" class="btn-view" target="_blank">Open Journal</a>
+      <a href="#" id="edit-link" class="btn-view" style="background:#444;margin-left:0.75rem">Edit Narrative</a>
+      <a href="#" id="publish-link" class="btn-view" style="background:#2a6a2a;margin-left:0.75rem">Publish to WordPress</a>
+    </div>
+    <div id="match-report" style="margin-top:1.25rem;display:none;">
+      <h2>Photo Matching</h2>
+      <div id="match-gps" style="margin-bottom:0.75rem;font-size:0.85rem;"></div>
+      <div id="match-ts" style="font-size:0.85rem;"></div>
     </div>
   </div>
 
@@ -366,7 +384,15 @@
     <h2>Previous Journals</h2>
     <ul class="journal-list">
       {% for j in journals %}
-      <li><a href="/download/{{ j }}" target="_blank">{{ j }}</a></li>
+      <li>
+        <a href="/download/{{ j.name }}" target="_blank">{{ j.name }}</a>
+        &nbsp;<a href="/edit/{{ j.name }}" style="color:#888;font-size:0.8rem">[edit]</a>
+        {% if j.wp_post_id %}
+        &nbsp;<a href="/add-photos/{{ j.name }}" style="color:#6aaa6a;font-size:0.8rem">[add photos]</a>
+        {% else %}
+        &nbsp;<a href="/publish/{{ j.name }}" style="color:#aaa;font-size:0.8rem">[publish]</a>
+        {% endif %}
+      </li>
       {% endfor %}
     </ul>
   </div>
@@ -420,31 +446,26 @@ setupDropZone(
 );
 
 // ── Step progress ──
-const steps = ["step-gpx", "step-match", "step-cull", "step-narrative", "step-build"];
-let currentStep = 0;
+const stepIds = ["step-gpx", "step-match", "step-cull", "step-narrative", "step-build"];
+const stepKeys = ["gpx", "match", "cull", "narrative", "build"];
 
 function activateStep(index) {
-  for (let i = 0; i < steps.length; i++) {
-    const el = document.getElementById(steps[i]);
+  for (let i = 0; i < stepIds.length; i++) {
+    const el = document.getElementById(stepIds[i]);
     if (i < index) el.className = "step done";
     else if (i === index) el.className = "step active";
     else el.className = "step";
   }
 }
 
-// Simulate step progression (server does real work, we just animate)
-let stepTimer = null;
-function startStepAnimation() {
-  currentStep = 0;
-  activateStep(0);
-  const delays = [2000, 5000, 30000, 15000, 5000]; // rough ms per step
-  let accumulated = 0;
-  for (let i = 0; i < steps.length; i++) {
-    accumulated += delays[i];
-    (function(idx, delay) {
-      setTimeout(() => activateStep(idx), delay);
-    })(i, accumulated);
-  }
+function allDone() {
+  for (const sid of stepIds) document.getElementById(sid).className = "step done";
+}
+
+function showError(msg) {
+  document.getElementById("progress-section").style.display = "none";
+  document.getElementById("error-section").style.display = "block";
+  document.getElementById("error-msg").textContent = msg;
 }
 
 // ── Form submit ──
@@ -457,48 +478,91 @@ document.getElementById("journal-form").addEventListener("submit", async functio
   if (!gpxInput.files.length) { alert("Please select a GPX file."); return; }
   if (!photosInput.files.length) { alert("Please select at least one photo."); return; }
 
-  // Show progress, hide others
   document.getElementById("progress-section").style.display = "block";
   document.getElementById("result-section").style.display = "none";
   document.getElementById("error-section").style.display = "none";
   document.getElementById("gen-btn").disabled = true;
-
-  startStepAnimation();
+  activateStep(0);
 
   const formData = new FormData(this);
 
   try {
-    const resp = await fetch("/generate", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await resp.json();
+    const resp = await fetch("/generate", { method: "POST", body: formData });
+    if (!resp.ok) { showError("Server error " + resp.status); return; }
 
-    if (data.success) {
-      // Mark all done
-      for (const sid of steps) document.getElementById(sid).className = "step done";
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-      // Show result
-      document.getElementById("progress-section").style.display = "none";
-      document.getElementById("result-section").style.display = "block";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-      const s = data.stats;
-      document.getElementById("result-stats").innerHTML = `
-        <div class="stat-item"><div class="val">${s.distance_miles}</div><div class="lbl">miles</div></div>
-        <div class="stat-item"><div class="val">${s.elevation_ft?.toLocaleString()}</div><div class="lbl">ft elevation</div></div>
-        <div class="stat-item"><div class="val">${Math.floor((s.duration_min||0)/60)}h ${(s.duration_min||0)%60}m</div><div class="lbl">ride time</div></div>
-        <div class="stat-item"><div class="val">${s.photos_selected}</div><div class="lbl">photos in journal</div></div>
-      `;
-      const link = document.getElementById("view-link");
-      link.href = "/download/" + data.filename;
-      link.textContent = "Open Journal →";
-    } else {
-      throw new Error(data.error || "Unknown error");
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // keep any incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+
+        if (data.error) {
+          showError(data.error);
+          return;
+        }
+
+        if (data.step) {
+          const idx = stepKeys.indexOf(data.step);
+          if (idx !== -1) activateStep(idx);
+        }
+
+        if (data.match_report) {
+          const gpsEl = document.getElementById("match-gps");
+          const tsEl = document.getElementById("match-ts");
+          const gpsCount = data.gps.length;
+          const tsCount = data.timestamp.length;
+
+          if (gpsCount > 0) {
+            const gpsLines = data.gps.map(p => `${p.file} → mile ${(p.km * 0.621371).toFixed(1)}`).join("<br>");
+            gpsEl.innerHTML = `<strong style="color:#2e7d32">✔ GPS matched (${gpsCount}):</strong><br>${gpsLines}`;
+          } else {
+            gpsEl.innerHTML = `<span style="color:var(--muted)">No GPS-matched photos.</span>`;
+          }
+
+          if (tsCount > 0) {
+            const tsLines = data.timestamp.map(p => `${p.file} → mile ${(p.km * 0.621371).toFixed(1)} (ts: ${p.ts})`).join("<br>");
+            tsEl.innerHTML = `<strong style="color:#e65100">⚠ Timestamp matched (${tsCount}) — may be off:</strong><br>${tsLines}<br><small style="color:var(--muted);margin-top:0.4rem;display:block">No GPS in these photos. If mile markers look wrong, adjust the timezone offset and regenerate.</small>`;
+          } else {
+            tsEl.innerHTML = `<span style="color:#2e7d32;font-size:0.85rem">✔ All photos matched by GPS.</span>`;
+          }
+          document.getElementById("match-report").style.display = "block";
+        }
+
+        if (data.success) {
+          allDone();
+          document.getElementById("progress-section").style.display = "none";
+          document.getElementById("result-section").style.display = "block";
+
+          const s = data.stats;
+          document.getElementById("result-stats").innerHTML = `
+            <div class="stat-item"><div class="val">${s.distance_miles}</div><div class="lbl">miles</div></div>
+            <div class="stat-item"><div class="val">${s.elevation_ft?.toLocaleString()}</div><div class="lbl">ft elevation</div></div>
+            <div class="stat-item"><div class="val">${Math.floor((s.duration_min||0)/60)}h ${(s.duration_min||0)%60}m</div><div class="lbl">ride time</div></div>
+            <div class="stat-item"><div class="val">${s.photos_selected}</div><div class="lbl">photos in journal</div></div>
+          `;
+          const link = document.getElementById("view-link");
+          link.href = "/download/" + data.filename;
+          link.textContent = "Open Journal →";
+          const editLink = document.getElementById("edit-link");
+          editLink.href = "/edit/" + data.filename;
+          const publishLink = document.getElementById("publish-link");
+          publishLink.href = "/publish/" + data.filename;
+        }
+      }
     }
   } catch (err) {
-    document.getElementById("progress-section").style.display = "none";
-    document.getElementById("error-section").style.display = "block";
-    document.getElementById("error-msg").textContent = err.message;
+    showError(err.message);
   } finally {
     document.getElementById("gen-btn").disabled = false;
   }

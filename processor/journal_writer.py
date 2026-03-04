@@ -24,7 +24,7 @@ def _format_date(dt) -> str:
         return str(dt)
 
 
-def write_narrative(stats: dict, selected_photos: list, client: anthropic.Anthropic) -> str:
+def write_narrative(stats: dict, selected_photos: list, client: anthropic.Anthropic, rider_notes: str = "") -> str:
     """
     Ask Claude to write a first-person ride narrative.
 
@@ -48,6 +48,8 @@ def write_narrative(stats: dict, selected_photos: list, client: anthropic.Anthro
 
     photo_summary = "\n".join(photo_notes) if photo_notes else "  (no photo descriptions available)"
 
+    rider_context = f"\nNotes from the rider (use these as ground truth for places, events, and sequence):\n{rider_notes.strip()}\n" if rider_notes.strip() else ""
+
     prompt = f"""You are writing a first-person travel journal entry for a motorcycle ride on a Harley-Davidson Pan America adventure bike.
 
 Ride data:
@@ -59,7 +61,7 @@ Ride data:
 
 Photos captured along the way (use these to anchor specific moments):
 {photo_summary}
-
+{rider_context}
 Write a vivid, authentic first-person narrative about this ride — 500-700 words. Requirements:
 - Sound like a real rider wrote it, not a travel brochure
 - Reference specific moments from the photo descriptions above

@@ -4,6 +4,7 @@ Run: python app.py
 Open: http://localhost:5000
 """
 import os
+import re
 import uuid
 import base64
 import json
@@ -12,8 +13,10 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import io
+from functools import wraps
 
-from flask import Flask, render_template, request, jsonify, send_file, url_for
+from flask import (Flask, render_template, request, jsonify, send_file,
+                   url_for, session, redirect, Response, stream_with_context)
 from dotenv import load_dotenv
 import anthropic
 import folium
@@ -22,14 +25,39 @@ from processor.gpx_parser import parse_gpx
 from processor.photo_matcher import match_photos_to_route
 from processor.photo_culler import cull_photos
 from processor.journal_writer import write_narrative
+from processor.wp_publisher import (upload_media, create_post, append_gallery,
+                                     extract_journal_data, _build_gallery)
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB upload limit
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB upload limit
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def sse(data: dict) -> str:
+    """Format a dict as a Server-Sent Event."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def wp_env():
+    return (
+        os.environ.get("WP_URL", "").rstrip("/"),
+        os.environ.get("WP_USERNAME", ""),
+        os.environ.get("WP_APP_PASSWORD", ""),
+    )
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
 
 
 def get_anthropic_client() -> anthropic.Anthropic:
@@ -41,49 +69,29 @@ def get_anthropic_client() -> anthropic.Anthropic:
 
 
 def build_folium_map(track_points: list, selected_photos: list) -> str:
-    """Build a folium map and return its HTML snippet (just the map div + scripts)."""
+    """Build a folium map and return its HTML snippet."""
     if not track_points:
         return "<p>No track data available.</p>"
 
-    # Center on midpoint of track
     lats = [p["lat"] for p in track_points]
     lons = [p["lon"] for p in track_points]
     center = [sum(lats) / len(lats), sum(lons) / len(lons)]
 
-    m = folium.Map(
-        location=center,
-        zoom_start=10,
-        tiles="CartoDB positron",
-        prefer_canvas=True,
-    )
+    m = folium.Map(location=center, zoom_start=10, tiles="CartoDB positron", prefer_canvas=True)
 
-    # Draw GPX track
-    track_coords = [(p["lat"], p["lon"]) for p in track_points]
     folium.PolyLine(
-        track_coords,
-        color="#E8521A",   # Harley orange
-        weight=3,
-        opacity=0.85,
-        tooltip="Ride track",
+        [(p["lat"], p["lon"]) for p in track_points],
+        color="#E8521A", weight=3, opacity=0.85, tooltip="Ride track",
     ).add_to(m)
 
-    # Start marker
     start = track_points[0]
-    folium.Marker(
-        location=[start["lat"], start["lon"]],
-        popup="<b>Start</b>",
-        icon=folium.Icon(color="green", icon="play", prefix="fa"),
-    ).add_to(m)
+    folium.Marker([start["lat"], start["lon"]], popup="<b>Start</b>",
+                  icon=folium.Icon(color="green", icon="play", prefix="fa")).add_to(m)
 
-    # End marker
     end = track_points[-1]
-    folium.Marker(
-        location=[end["lat"], end["lon"]],
-        popup="<b>Finish</b>",
-        icon=folium.Icon(color="red", icon="flag", prefix="fa"),
-    ).add_to(m)
+    folium.Marker([end["lat"], end["lon"]], popup="<b>Finish</b>",
+                  icon=folium.Icon(color="red", icon="flag", prefix="fa")).add_to(m)
 
-    # Photo pins
     for i, photo in enumerate(selected_photos):
         pt = photo.get("track_point", {})
         lat = pt.get("lat") or photo.get("lat")
@@ -94,37 +102,23 @@ def build_folium_map(track_points: list, selected_photos: list) -> str:
         miles = km * 0.621371
         popup_html = (
             f'<div style="text-align:center">'
-            f'<img src="photo_{i}" id="map-photo-{i}" '
-            f'style="max-width:200px;max-height:150px;border-radius:4px" '
-            f'onerror="this.style.display=\'none\'" />'
             f'<br><small>Mile {miles:.0f}</small></div>'
         )
         folium.CircleMarker(
-            location=[lat, lon],
-            radius=7,
-            color="#ffffff",
-            fill=True,
-            fill_color="#E8521A",
-            fill_opacity=0.9,
+            location=[lat, lon], radius=7, color="#ffffff",
+            fill=True, fill_color="#E8521A", fill_opacity=0.9,
             popup=folium.Popup(popup_html, max_width=220),
             tooltip=f"Photo at mile {miles:.0f}",
         ).add_to(m)
 
-    # Fit bounds to track
     m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-
-    # Return just the inner HTML of the map (no full page)
-    map_html = m._repr_html_()
-    return map_html
+    return m._repr_html_()
 
 
 def photo_to_base64_thumb(path: str, max_px: int = 1200) -> str:
-    """Resize and encode photo as base64 data URI for embedding in HTML."""
+    """Resize and encode photo as base64 data URI."""
     from PIL import Image
-    img = Image.open(path)
-    img = img.convert("RGB")
-
-    # Auto-rotate based on EXIF orientation
+    img = Image.open(path).convert("RGB")
     try:
         import piexif
         exif_data = img.info.get("exif")
@@ -136,27 +130,18 @@ def photo_to_base64_thumb(path: str, max_px: int = 1200) -> str:
                 img = img.rotate(rotations[orientation], expand=True)
     except Exception:
         pass
-
     w, h = img.size
     if max(w, h) > max_px:
         scale = max_px / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=82)
     b64 = base64.standard_b64encode(buf.getvalue()).decode()
     return f"data:image/jpeg;base64,{b64}"
 
 
-def assemble_journal_html(
-    stats: dict,
-    narrative: str,
-    map_html: str,
-    selected_photos: list,
-    output_path: Path,
-):
-    """Render the final self-contained HTML journal and write it to output_path."""
-    # Encode all photos as base64
+def assemble_journal_html(stats, narrative, map_html, selected_photos, output_path):
+    """Render the final self-contained HTML journal."""
     photo_data = []
     for photo in selected_photos:
         try:
@@ -171,7 +156,6 @@ def assemble_journal_html(
         except Exception as e:
             print(f"[app] Skipping photo {photo.get('filename')}: {e}")
 
-    # Format stats for display
     date_str = ""
     if stats.get("start_time"):
         date_str = stats["start_time"].strftime("%B %d, %Y")
@@ -192,109 +176,357 @@ def assemble_journal_html(
         map_html=map_html,
         photos=photo_data,
     )
-
     output_path.write_text(rendered, encoding="utf-8")
 
 
+def _safe_path(filename):
+    """Return resolved path if safe, else None."""
+    path = OUTPUT_DIR / filename
+    if not path.exists() or not path.is_file():
+        return None
+    if OUTPUT_DIR not in path.resolve().parents and path.resolve() != OUTPUT_DIR:
+        return None
+    return path
+
+
 # ──────────────────────────────────────────────
-# Routes
+# Auth
+# ──────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        if (request.form.get("username") == os.environ.get("APP_USERNAME") and
+                request.form.get("password") == os.environ.get("APP_PASSWORD")):
+            session["logged_in"] = True
+            return redirect(url_for("index"))
+        error = "Invalid credentials"
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ──────────────────────────────────────────────
+# Main pages
 # ──────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def index():
-    # List previously generated journals
-    journals = sorted(OUTPUT_DIR.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
-    journal_names = [j.name for j in journals[:10]]
-    return render_template("index.html", journals=journal_names)
+    journals_raw = sorted(OUTPUT_DIR.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True)
+    journals = []
+    for j in journals_raw[:10]:
+        try:
+            with open(j, "rb") as f:
+                f.seek(max(0, j.stat().st_size - 200))
+                tail = f.read().decode("utf-8", errors="ignore")
+            wp_id_m = re.search(r'<!-- WP_POST_ID: (\d+) -->', tail)
+            wp_post_id = int(wp_id_m.group(1)) if wp_id_m else None
+        except Exception:
+            wp_post_id = None
+        journals.append({"name": j.name, "wp_post_id": wp_post_id})
+    return render_template("index.html", journals=journals)
 
+
+# ──────────────────────────────────────────────
+# Generate (SSE)
+# ──────────────────────────────────────────────
 
 @app.route("/generate", methods=["POST"])
+@login_required
 def generate():
-    """Handle upload and generate the journal. Returns JSON with status updates."""
+    """Stream journal generation progress as Server-Sent Events."""
     gpx_file = request.files.get("gpx_file")
     photos = request.files.getlist("photos")
     tz_offset = float(request.form.get("tz_offset", "0"))
+    rider_notes = request.form.get("rider_notes", "")
 
     if not gpx_file:
         return jsonify({"error": "No GPX file uploaded"}), 400
     if not photos:
         return jsonify({"error": "No photos uploaded"}), 400
 
-    # Save uploaded files to a temp dir
     tmp_dir = Path(tempfile.mkdtemp(prefix="ridejrnl_"))
     photo_dir = tmp_dir / "photos"
     photo_dir.mkdir()
 
-    try:
-        # Save GPX
-        gpx_path = tmp_dir / "ride.gpx"
-        gpx_file.save(str(gpx_path))
+    gpx_path = tmp_dir / "ride.gpx"
+    gpx_file.save(str(gpx_path))
+    for photo in photos:
+        if photo.filename and Path(photo.filename).suffix.lower() in {".jpg", ".jpeg"}:
+            photo.save(str(photo_dir / Path(photo.filename).name))
 
-        # Save photos
-        for photo in photos:
-            if photo.filename and Path(photo.filename).suffix.lower() in {".jpg", ".jpeg"}:
-                dest = photo_dir / Path(photo.filename).name
-                photo.save(str(dest))
+    def stream():
+        try:
+            yield sse({"step": "gpx"})
+            gpx_data = parse_gpx(str(gpx_path))
+            stats = gpx_data["stats"]
+            track_points = gpx_data["points"]
 
-        # Step 1: Parse GPX
-        gpx_data = parse_gpx(str(gpx_path))
-        stats = gpx_data["stats"]
-        track_points = gpx_data["points"]
+            yield sse({"step": "match"})
+            matched = match_photos_to_route(str(photo_dir), track_points, tz_offset_hours=tz_offset)
+            if not matched:
+                yield sse({"error": "No photos matched the ride track. Check that photo timestamps overlap with the GPX time range."})
+                return
 
-        # Step 2: Match photos to route
-        matched = match_photos_to_route(str(photo_dir), track_points, tz_offset_hours=tz_offset)
+            gps_matched = [{"file": p["filename"], "km": round(p["km"], 1)} for p in matched if p.get("matched_by") == "gps"]
+            ts_matched = [{"file": p["filename"], "km": round(p["km"], 1), "ts": str(p.get("timestamp", "none"))} for p in matched if p.get("matched_by") == "timestamp"]
+            yield sse({"match_report": True, "gps": gps_matched, "timestamp": ts_matched})
 
-        if not matched:
-            return jsonify({"error": "No photos could be matched to the ride track. Check that photo timestamps overlap with the GPX time range."}), 400
+            yield sse({"step": "cull", "photo_count": len(matched)})
+            client = get_anthropic_client()
+            selected = cull_photos(matched, client)
 
-        # Step 3: Cull photos with AI
-        client = get_anthropic_client()
-        selected = cull_photos(matched, client)
+            yield sse({"step": "narrative"})
+            narrative = write_narrative(stats, selected, client, rider_notes=rider_notes)
 
-        # Step 4: Write narrative
-        narrative = write_narrative(stats, selected, client)
+            yield sse({"step": "build"})
+            map_html = build_folium_map(track_points, selected)
 
-        # Step 5: Build map
-        map_html = build_folium_map(track_points, selected)
+            ride_date = stats.get("start_time")
+            date_slug = ride_date.strftime("%Y-%m-%d") if ride_date else "ride"
+            filename = f"journal_{date_slug}_{uuid.uuid4().hex[:6]}.html"
+            output_path = OUTPUT_DIR / filename
+            assemble_journal_html(stats, narrative, map_html, selected, output_path)
 
-        # Step 6: Assemble HTML
-        ride_date = stats.get("start_time")
-        date_slug = ride_date.strftime("%Y-%m-%d") if ride_date else "ride"
-        filename = f"journal_{date_slug}_{uuid.uuid4().hex[:6]}.html"
-        output_path = OUTPUT_DIR / filename
+            yield sse({
+                "success": True,
+                "filename": filename,
+                "stats": {
+                    "distance_miles": stats.get("distance_miles"),
+                    "elevation_ft": stats.get("elevation_gain_ft"),
+                    "duration_min": stats.get("duration_min"),
+                    "photos_selected": len(selected),
+                    "photos_total": len(matched),
+                }
+            })
 
-        assemble_journal_html(stats, narrative, map_html, selected, output_path)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield sse({"error": str(e)})
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        return jsonify({
-            "success": True,
-            "filename": filename,
-            "stats": {
-                "distance_miles": stats.get("distance_miles"),
-                "elevation_ft": stats.get("elevation_gain_ft"),
-                "duration_min": stats.get("duration_min"),
-                "photos_selected": len(selected),
-                "photos_total": len(matched),
-            }
-        })
+    return Response(stream_with_context(stream()), mimetype="text/event-stream")
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
 
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+# ──────────────────────────────────────────────
+# Edit journal narrative
+# ──────────────────────────────────────────────
 
+@app.route("/edit/<filename>")
+@login_required
+def edit_journal(filename):
+    path = _safe_path(filename)
+    if not path:
+        return "Journal not found", 404
+    html = path.read_text(encoding="utf-8")
+    start = html.find("<!-- NARRATIVE_START -->")
+    end = html.find("<!-- NARRATIVE_END -->")
+    if start == -1 or end == -1:
+        return "This journal doesn't support editing (regenerate it to enable).", 400
+    raw = html[start + len("<!-- NARRATIVE_START -->"):end].strip()
+    plain = re.sub(r"</?p>", "", raw).strip()
+    paragraphs = [p.strip() for p in plain.split("\n") if p.strip()]
+    text = "\n\n".join(paragraphs)
+    return render_template("edit.html", filename=filename, text=text)
+
+
+@app.route("/save/<filename>", methods=["POST"])
+@login_required
+def save_journal(filename):
+    path = _safe_path(filename)
+    if not path:
+        return "Journal not found", 404
+    text = request.form.get("narrative", "")
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    new_narrative = "\n".join(f"<p>{p}</p>" for p in paragraphs)
+    html = path.read_text(encoding="utf-8")
+    start = html.find("<!-- NARRATIVE_START -->")
+    end = html.find("<!-- NARRATIVE_END -->")
+    if start == -1 or end == -1:
+        return "Markers not found", 400
+    html = (
+        html[:start + len("<!-- NARRATIVE_START -->")] +
+        "\n      " + new_narrative + "\n      " +
+        html[end:]
+    )
+    path.write_text(html, encoding="utf-8")
+    return redirect(url_for("download", filename=filename))
+
+
+# ──────────────────────────────────────────────
+# Publish to WordPress (SSE)
+# ──────────────────────────────────────────────
+
+@app.route("/publish/<filename>", methods=["GET"])
+@login_required
+def publish_form(filename):
+    path = _safe_path(filename)
+    if not path:
+        return "Journal not found", 404
+    html = path.read_text(encoding="utf-8")
+    data = extract_journal_data(html)
+    return render_template("publish.html", filename=filename, **data)
+
+
+@app.route("/publish/<filename>", methods=["POST"])
+@login_required
+def publish_journal(filename):
+    path = _safe_path(filename)
+    if not path:
+        return jsonify({"error": "Journal not found"}), 404
+
+    title = request.form.get("title", "Ride Journal")
+    status = request.form.get("status", "publish")
+    wp_url, wp_user, wp_pass = wp_env()
+
+    html = path.read_text(encoding="utf-8")
+    jdata = extract_journal_data(html)
+
+    def stream():
+        try:
+            photos = jdata["photos"]
+            uploaded = []
+
+            for i, photo_uri in enumerate(photos):
+                yield sse({"step": "upload", "current": i + 1, "total": len(photos)})
+                m = re.match(r'data:image/jpeg;base64,(.+)', photo_uri)
+                if m:
+                    media = upload_media(wp_url, wp_user, wp_pass, m.group(1), f"ride-photo-{i+1:02d}.jpg")
+                    uploaded.append(media)
+
+            yield sse({"step": "creating_post"})
+
+            stats_block = f'<p><strong>{jdata["date"]}</strong>'
+            if jdata["distance"]:
+                stats_block += f' &mdash; {jdata["distance"]} miles'
+            stats_block += '</p>'
+
+            gallery_block = (
+                "\n\n<!-- GALLERY_BLOCK_START -->\n" +
+                _build_gallery(uploaded) +
+                "\n<!-- GALLERY_BLOCK_END -->"
+            ) if uploaded else "\n\n<!-- GALLERY_BLOCK_START -->\n<!-- GALLERY_BLOCK_END -->"
+
+            content = stats_block + "\n\n" + jdata["narrative"] + gallery_block
+
+            featured_id = uploaded[0]["id"] if uploaded else None
+            post = create_post(wp_url, wp_user, wp_pass, title, content,
+                               featured_id=featured_id, status=status, categories=[2])
+
+            # Save post ID to journal file
+            new_html = path.read_text(encoding="utf-8")
+            # Remove old post ID if present, then append new one
+            new_html = re.sub(r'\n?<!-- WP_POST_ID: \d+ -->', '', new_html)
+            new_html += f"\n<!-- WP_POST_ID: {post['id']} -->"
+            path.write_text(new_html, encoding="utf-8")
+
+            yield sse({"success": True, "post_id": post["id"], "post_url": post["url"]})
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield sse({"error": str(e)})
+
+    return Response(stream_with_context(stream()), mimetype="text/event-stream")
+
+
+# ──────────────────────────────────────────────
+# Add photos to existing WP post (SSE)
+# ──────────────────────────────────────────────
+
+@app.route("/add-photos/<filename>", methods=["GET"])
+@login_required
+def add_photos_form(filename):
+    path = _safe_path(filename)
+    if not path:
+        return "Journal not found", 404
+    with open(path, "rb") as f:
+        f.seek(max(0, path.stat().st_size - 200))
+        tail = f.read().decode("utf-8", errors="ignore")
+    wp_id_m = re.search(r'<!-- WP_POST_ID: (\d+) -->', tail)
+    if not wp_id_m:
+        return "This journal hasn't been published to WordPress yet.", 400
+    wp_post_id = int(wp_id_m.group(1))
+    return render_template("add_photos.html", filename=filename, wp_post_id=wp_post_id)
+
+
+@app.route("/add-photos/<filename>", methods=["POST"])
+@login_required
+def add_photos_stream(filename):
+    path = _safe_path(filename)
+    if not path:
+        return jsonify({"error": "Journal not found"}), 404
+
+    with open(path, "rb") as f:
+        f.seek(max(0, path.stat().st_size - 200))
+        tail = f.read().decode("utf-8", errors="ignore")
+    wp_id_m = re.search(r'<!-- WP_POST_ID: (\d+) -->', tail)
+    if not wp_id_m:
+        return jsonify({"error": "No WordPress post ID found — publish first."}), 400
+    wp_post_id = int(wp_id_m.group(1))
+
+    photos = request.files.getlist("photos")
+    wp_url, wp_user, wp_pass = wp_env()
+
+    # Save uploads to temp dir
+    tmp_dir = Path(tempfile.mkdtemp(prefix="ridejrnl_add_"))
+    photo_paths = []
+    for photo in photos:
+        if photo.filename and Path(photo.filename).suffix.lower() in {".jpg", ".jpeg"}:
+            dest = tmp_dir / Path(photo.filename).name
+            photo.save(str(dest))
+            photo_paths.append(dest)
+
+    def stream():
+        try:
+            uploaded = []
+            for i, photo_path in enumerate(photo_paths):
+                yield sse({"step": "upload", "current": i + 1, "total": len(photo_paths)})
+                from PIL import Image
+                img = Image.open(photo_path).convert("RGB")
+                w, h = img.size
+                if max(w, h) > 2000:
+                    scale = 2000 / max(w, h)
+                    img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                b64 = base64.standard_b64encode(buf.getvalue()).decode()
+                media = upload_media(wp_url, wp_user, wp_pass, b64, photo_path.name)
+                uploaded.append(media)
+
+            yield sse({"step": "updating_post"})
+            post_url = append_gallery(wp_url, wp_user, wp_pass, wp_post_id, uploaded)
+
+            yield sse({"success": True, "post_url": post_url, "added": len(uploaded)})
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield sse({"error": str(e)})
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return Response(stream_with_context(stream()), mimetype="text/event-stream")
+
+
+# ──────────────────────────────────────────────
+# Download
+# ──────────────────────────────────────────────
 
 @app.route("/download/<filename>")
+@login_required
 def download(filename):
-    """Serve a generated journal HTML file."""
-    path = OUTPUT_DIR / filename
-    if not path.exists() or not path.is_file():
+    path = _safe_path(filename)
+    if not path:
         return "Journal not found", 404
-    # Security: ensure filename doesn't escape output dir
-    if OUTPUT_DIR not in path.resolve().parents and path.resolve() != OUTPUT_DIR:
-        return "Not found", 404
     return send_file(str(path), mimetype="text/html", as_attachment=False)
 
 
@@ -303,4 +535,4 @@ if __name__ == "__main__":
     print("  Ride Journal Generator")
     print("  Open: http://localhost:5000")
     print("=" * 50)
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000, threaded=True)
