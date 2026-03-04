@@ -51,13 +51,15 @@ def upload_media(wp_url: str, username: str, password: str, b64_data: str, filen
 
 def create_post(wp_url: str, username: str, password: str, title: str,
                 content: str, featured_id: int = None, status: str = "publish",
-                categories: list = None) -> dict:
+                categories: list = None, excerpt: str = None) -> dict:
     """Create a WP post. Returns {id, url}."""
     payload = {"title": title, "content": content, "status": status}
     if featured_id:
         payload["featured_media"] = featured_id
     if categories:
         payload["categories"] = categories
+    if excerpt:
+        payload["excerpt"] = excerpt
     resp = requests.post(
         f"{wp_url}/wp-json/wp/v2/posts",
         auth=_auth(username, password),

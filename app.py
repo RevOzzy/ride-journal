@@ -491,9 +491,14 @@ def publish_journal(filename):
 
             content = map_block + stats_block + date_line + jdata["narrative"] + gpx_block + gallery_block
 
+            # Build excerpt from first narrative paragraph (plain text)
+            first_p = re.search(r'<p>(.*?)</p>', jdata["narrative"], re.DOTALL)
+            excerpt = re.sub(r'<[^>]+>', '', first_p.group(1)).strip() if first_p else ""
+
             featured_id = uploaded[0]["id"] if uploaded else None
             post = create_post(wp_url, wp_user, wp_pass, title, content,
-                               featured_id=featured_id, status=status, categories=[2])
+                               featured_id=featured_id, status=status, categories=[2],
+                               excerpt=excerpt)
 
             # Save post ID to journal file
             new_html = path.read_text(encoding="utf-8")
