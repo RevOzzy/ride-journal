@@ -60,13 +60,17 @@ def create_post(wp_url: str, username: str, password: str, title: str,
         payload["categories"] = categories
     if excerpt:
         payload["excerpt"] = excerpt
+    content_kb = len(content.encode()) // 1024
+    if content_kb > 4096:
+        raise ValueError(f"Post content too large ({content_kb}KB) — would exceed WordPress limits.")
     resp = requests.post(
         f"{wp_url}/wp-json/wp/v2/posts",
         auth=_auth(username, password),
         json=payload,
-        timeout=30,
+        timeout=60,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"WordPress returned {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     return {"id": data["id"], "url": data["link"]}
 
