@@ -423,44 +423,43 @@ def publish_journal(filename):
 
             yield sse({"step": "creating_post"})
 
-            # Map block
+            # Static route map image
             map_block = ""
-            if jdata.get("map_html"):
-                map_block = (
-                    '<!-- wp:html -->\n'
-                    '<div style="width:100%;height:480px;overflow:hidden;">'
-                    + jdata["map_html"] +
-                    '</div>\n<!-- /wp:html -->\n\n'
-                )
+            track_points = jdata.get("track_points", [])
+            if track_points:
+                yield sse({"step": "building_map"})
+                try:
+                    import io as _io
+                    from staticmap import StaticMap, Line, CircleMarker
+                    sm = StaticMap(1200, 500, url_template="https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png")
+                    coords = [(p["lon"], p["lat"]) for p in track_points[::10]]
+                    sm.add_line(Line(coords, "#E8500A", 3))
+                    sm.add_marker(CircleMarker((coords[0][0], coords[0][1]), "#27ae60", 12))
+                    sm.add_marker(CircleMarker((coords[-1][0], coords[-1][1]), "#e74c3c", 12))
+                    img = sm.render()
+                    buf = _io.BytesIO()
+                    img.save(buf, format="JPEG", quality=88)
+                    import base64 as _b64
+                    map_b64 = _b64.standard_b64encode(buf.getvalue()).decode()
+                    map_media = upload_media(wp_url, wp_user, wp_pass, map_b64, "ride-map.jpg")
+                    map_block = f'<!-- wp:image {{"id":{map_media["id"]},"sizeSlug":"full","linkDestination":"none"}} -->\n<figure class="wp-block-image size-full"><img src="{map_media["url"]}" alt="Ride route map" class="wp-image-{map_media["id"]}"/></figure>\n<!-- /wp:image -->\n\n'
+                except Exception as e:
+                    print(f"[publish] Static map failed: {e}")
 
-            # Stats bar block
-            stats_parts = []
+            # Stats bar — use table so WordPress doesn't strip display:flex
+            stats_cells = []
             if jdata["distance"]:
-                stats_parts.append(
-                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
-                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["distance"]}</strong>'
-                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Miles</small></div>'
-                )
+                stats_cells.append(f'<td style="padding:.8rem 1.5rem;text-align:center;border:none;"><strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["distance"]}</strong><small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Miles</small></td>')
             if jdata.get("elevation"):
-                stats_parts.append(
-                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
-                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["elevation"]}</strong>'
-                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ft Elevation</small></div>'
-                )
+                stats_cells.append(f'<td style="padding:.8rem 1.5rem;text-align:center;border:none;"><strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["elevation"]}</strong><small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ft Elevation</small></td>')
             if jdata.get("duration"):
-                stats_parts.append(
-                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
-                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["duration"]}</strong>'
-                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ride Time</small></div>'
-                )
+                stats_cells.append(f'<td style="padding:.8rem 1.5rem;text-align:center;border:none;"><strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["duration"]}</strong><small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ride Time</small></td>')
             stats_block = ""
-            if stats_parts:
+            if stats_cells:
                 stats_block = (
-                    '<!-- wp:html -->\n'
-                    '<div style="background:#1a1a1a;color:#fff;display:flex;justify-content:center;'
-                    'flex-wrap:wrap;gap:0;margin-bottom:1.5rem;">'
-                    + "".join(stats_parts) +
-                    '</div>\n<!-- /wp:html -->\n\n'
+                    '<table style="width:100%;background:#1a1a1a;color:#fff;border-collapse:collapse;margin-bottom:1.5rem;">'
+                    '<tr>' + "".join(stats_cells) + '</tr>'
+                    '</table>\n\n'
                 )
 
             date_line = f'<p style="color:#888;font-size:.85rem;text-transform:uppercase;letter-spacing:.1em;">{jdata["date"]}</p>\n\n' if jdata["date"] else ""
@@ -472,14 +471,7 @@ def publish_journal(filename):
                 yield sse({"step": "uploading_gpx"})
                 try:
                     gpx_media = upload_gpx(wp_url, wp_user, wp_pass, str(gpx_path), gpx_path.name)
-                    gpx_block = (
-                        '\n\n<!-- wp:html -->\n'
-                        '<p style="margin-top:2rem;">'
-                        f'<a href="{gpx_media["url"]}" download style="display:inline-flex;align-items:center;gap:.5rem;'
-                        'background:#1a1a1a;color:#fff;padding:.6rem 1.2rem;border-radius:6px;text-decoration:none;'
-                        'font-size:.9rem;font-family:sans-serif;">'
-                        '&#x1F5FA; Download GPX Route</a></p>\n<!-- /wp:html -->'
-                    )
+                    gpx_block = f'\n\n<p><a href="{gpx_media["url"]}" style="background:#1a1a1a;color:#fff;padding:.6rem 1.2rem;border-radius:6px;text-decoration:none;font-size:.9rem;">&#x1F5FA; Download GPX Route</a></p>'
                 except Exception as e:
                     print(f"[publish] GPX upload failed: {e}")
 

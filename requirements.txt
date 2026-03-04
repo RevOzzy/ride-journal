@@ -5,3 +5,4 @@ piexif
 anthropic
 folium
 python-dotenv
+staticmap

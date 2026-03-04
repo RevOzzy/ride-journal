@@ -156,15 +156,17 @@ def extract_journal_data(html: str) -> dict:
     dur_m = re.search(r'class="val">([^<]+)</div>\s*<div class="lbl">Ride Time', html)
     duration = dur_m.group(1).strip() if dur_m else ""
 
-    # Extract the folium map HTML from inside the map-hero div
-    map_html = ""
-    map_start = html.find('<div class="map-hero">')
-    map_end = html.find('<!-- Stats bar -->')
-    if map_start != -1 and map_end != -1:
-        inner = html[map_start + len('<div class="map-hero">'):map_end].strip()
-        if inner.endswith('</div>'):
-            inner = inner[:-6].strip()
-        map_html = inner
+    # Extract track points from embedded folium map JSON (latlng arrays)
+    import json as _json
+    track_points = []
+    latlng_m = re.search(r'L\.polyline\(\s*(\[\[.*?\]\])', html, re.DOTALL)
+    if latlng_m:
+        try:
+            pairs = _json.loads(latlng_m.group(1))
+            track_points = [{"lat": p[0], "lon": p[1]} for p in pairs]
+        except Exception:
+            pass
+    map_html = ""  # kept for compatibility
 
     photos = re.findall(r'<img src="(data:image/jpeg;base64,[A-Za-z0-9+/=]+)"', html)
 
@@ -179,6 +181,7 @@ def extract_journal_data(html: str) -> dict:
         "elevation": elevation,
         "duration": duration,
         "map_html": map_html,
+        "track_points": track_points,
         "photos": photos,
         "wp_post_id": wp_post_id,
     }
