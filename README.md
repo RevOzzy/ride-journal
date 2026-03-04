@@ -4,6 +4,8 @@ Turn a GPX track + a folder of ride photos into a polished, self-contained HTML 
 
 Built for adventure motorcycle riders, but works for any GPS-tracked activity: cycling, hiking, backpacking, overlanding.
 
+![Ride Journal Generator — sample output](screenshot.png)
+
 ---
 
 ## Features
