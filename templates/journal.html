@@ -282,7 +282,7 @@
       <div class="photo-grid" id="photo-grid">
         {% for photo in photos %}
         <div class="photo-item" onclick="openLightbox({{ loop.index0 }})">
-          <img src="{{ photo.data_uri }}" alt="Mile {{ photo.miles }}" loading="lazy" />
+          <img src="{{ photo.data_uri }}" alt="Mile {{ photo.miles }}" data-score="{{ photo.score }}" loading="lazy" />
           <span class="mile-badge">Mile {{ photo.miles }}</span>
         </div>
         {% endfor %}

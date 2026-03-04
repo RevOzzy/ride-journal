@@ -172,7 +172,16 @@ def extract_journal_data(html: str) -> dict:
             pass
     map_html = ""  # kept for compatibility
 
-    photos = re.findall(r'<img src="(data:image/jpeg;base64,[A-Za-z0-9+/=]+)"', html)
+    # Extract photos with scores — [(base64_uri, score), ...]
+    photo_matches = re.findall(
+        r'<img src="(data:image/jpeg;base64,[A-Za-z0-9+/=]+)"[^>]*data-score="([0-9.]+)"',
+        html
+    )
+    if photo_matches:
+        photos = [(uri, float(score)) for uri, score in photo_matches]
+    else:
+        # Older journals without scores — fall back to plain extraction
+        photos = [(uri, 5.0) for uri in re.findall(r'<img src="(data:image/jpeg;base64,[A-Za-z0-9+/=]+)"', html)]
 
     wp_id_m = re.search(r'<!-- WP_POST_ID: (\d+) -->', html)
     wp_post_id = int(wp_id_m.group(1)) if wp_id_m else None

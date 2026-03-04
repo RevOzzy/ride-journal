@@ -152,6 +152,7 @@ def assemble_journal_html(stats, narrative, map_html, selected_photos, output_pa
                 "km": km,
                 "miles": round(km * 0.621371, 1),
                 "filename": photo.get("filename", ""),
+                "score": round(photo.get("score", 5.0), 2),
             })
         except Exception as e:
             print(f"[app] Skipping photo {photo.get('filename')}: {e}")
@@ -411,15 +412,20 @@ def publish_journal(filename):
 
     def stream():
         try:
-            photos = jdata["photos"]
+            photos = jdata["photos"]  # list of (uri, score) tuples
             uploaded = []
+            best_media_id = None
+            best_score = -1
 
-            for i, photo_uri in enumerate(photos):
+            for i, (photo_uri, score) in enumerate(photos):
                 yield sse({"step": "upload", "current": i + 1, "total": len(photos)})
                 m = re.match(r'data:image/jpeg;base64,(.+)', photo_uri)
                 if m:
                     media = upload_media(wp_url, wp_user, wp_pass, m.group(1), f"ride-photo-{i+1:02d}.jpg")
                     uploaded.append(media)
+                    if score > best_score:
+                        best_score = score
+                        best_media_id = media["id"]
 
             yield sse({"step": "creating_post"})
 
@@ -487,7 +493,7 @@ def publish_journal(filename):
             first_p = re.search(r'<p>(.*?)</p>', jdata["narrative"], re.DOTALL)
             excerpt = re.sub(r'<[^>]+>', '', first_p.group(1)).strip() if first_p else ""
 
-            featured_id = uploaded[0]["id"] if uploaded else None
+            featured_id = best_media_id if best_media_id else (uploaded[0]["id"] if uploaded else None)
             post = create_post(wp_url, wp_user, wp_pass, title, content,
                                featured_id=featured_id, status=status, categories=[2],
                                excerpt=excerpt)
