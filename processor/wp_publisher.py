@@ -12,6 +12,25 @@ def _auth(username, password):
     return HTTPBasicAuth(username, password)
 
 
+def upload_gpx(wp_url: str, username: str, password: str, gpx_path: str, filename: str) -> dict:
+    """Upload a GPX file to WP media library. Returns {id, url}."""
+    with open(gpx_path, "rb") as f:
+        data = f.read()
+    resp = requests.post(
+        f"{wp_url}/wp-json/wp/v2/media",
+        auth=_auth(username, password),
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "application/gpx+xml",
+        },
+        data=data,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    d = resp.json()
+    return {"id": d["id"], "url": d["source_url"]}
+
+
 def upload_media(wp_url: str, username: str, password: str, b64_data: str, filename: str) -> dict:
     """Upload a base64 JPEG to WP media library. Returns {id, url}."""
     img_bytes = base64.b64decode(b64_data)
@@ -129,6 +148,22 @@ def extract_journal_data(html: str) -> dict:
     dist_m = re.search(r'class="val">([\d.]+)</div>\s*<div class="lbl">Miles', html)
     distance = dist_m.group(1) if dist_m else ""
 
+    elev_m = re.search(r'class="val">([\d,]+)</div>\s*<div class="lbl">Ft Elevation', html)
+    elevation = elev_m.group(1) if elev_m else ""
+
+    dur_m = re.search(r'class="val">([^<]+)</div>\s*<div class="lbl">Ride Time', html)
+    duration = dur_m.group(1).strip() if dur_m else ""
+
+    # Extract the folium map HTML from inside the map-hero div
+    map_html = ""
+    map_start = html.find('<div class="map-hero">')
+    map_end = html.find('<!-- Stats bar -->')
+    if map_start != -1 and map_end != -1:
+        inner = html[map_start + len('<div class="map-hero">'):map_end].strip()
+        if inner.endswith('</div>'):
+            inner = inner[:-6].strip()
+        map_html = inner
+
     photos = re.findall(r'<img src="(data:image/jpeg;base64,[A-Za-z0-9+/=]+)"', html)
 
     wp_id_m = re.search(r'<!-- WP_POST_ID: (\d+) -->', html)
@@ -139,6 +174,9 @@ def extract_journal_data(html: str) -> dict:
         "auto_title": auto_title,
         "date": date,
         "distance": distance,
+        "elevation": elevation,
+        "duration": duration,
+        "map_html": map_html,
         "photos": photos,
         "wp_post_id": wp_post_id,
     }

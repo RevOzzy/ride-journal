@@ -25,7 +25,7 @@ from processor.gpx_parser import parse_gpx
 from processor.photo_matcher import match_photos_to_route
 from processor.photo_culler import cull_photos
 from processor.journal_writer import write_narrative
-from processor.wp_publisher import (upload_media, create_post, append_gallery,
+from processor.wp_publisher import (upload_media, upload_gpx, create_post, append_gallery,
                                      extract_journal_data, _build_gallery)
 
 load_dotenv()
@@ -294,6 +294,25 @@ def generate():
             output_path = OUTPUT_DIR / filename
             assemble_journal_html(stats, narrative, map_html, selected, output_path)
 
+            # Save a stripped GPX (no metadata/author info) alongside the journal
+            gpx_out = OUTPUT_DIR / filename.replace(".html", ".gpx")
+            import gpxpy, gpxpy.gpx as gpxmod
+            with open(str(gpx_path), "r", encoding="utf-8") as _f:
+                _src = gpxpy.parse(_f)
+            _clean = gpxmod.GPX()
+            for _trk in _src.tracks:
+                _t = gpxmod.GPXTrack(name=_trk.name or "Ride")
+                for _seg in _trk.segments:
+                    _s = gpxmod.GPXTrackSegment()
+                    for _pt in _seg.points:
+                        _s.points.append(gpxmod.GPXTrackPoint(
+                            _pt.latitude, _pt.longitude,
+                            elevation=_pt.elevation, time=_pt.time
+                        ))
+                    _t.segments.append(_s)
+                _clean.tracks.append(_t)
+            gpx_out.write_text(_clean.to_xml(), encoding="utf-8")
+
             yield sse({
                 "success": True,
                 "filename": filename,
@@ -404,10 +423,65 @@ def publish_journal(filename):
 
             yield sse({"step": "creating_post"})
 
-            stats_block = f'<p><strong>{jdata["date"]}</strong>'
+            # Map block
+            map_block = ""
+            if jdata.get("map_html"):
+                map_block = (
+                    '<!-- wp:html -->\n'
+                    '<div style="width:100%;height:480px;overflow:hidden;">'
+                    + jdata["map_html"] +
+                    '</div>\n<!-- /wp:html -->\n\n'
+                )
+
+            # Stats bar block
+            stats_parts = []
             if jdata["distance"]:
-                stats_block += f' &mdash; {jdata["distance"]} miles'
-            stats_block += '</p>'
+                stats_parts.append(
+                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
+                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["distance"]}</strong>'
+                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Miles</small></div>'
+                )
+            if jdata.get("elevation"):
+                stats_parts.append(
+                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
+                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["elevation"]}</strong>'
+                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ft Elevation</small></div>'
+                )
+            if jdata.get("duration"):
+                stats_parts.append(
+                    f'<div style="padding:.5rem 1.5rem;text-align:center;">'
+                    f'<strong style="color:#E8500A;font-size:1.5rem;display:block;">{jdata["duration"]}</strong>'
+                    f'<small style="text-transform:uppercase;letter-spacing:.08em;color:#aaa;">Ride Time</small></div>'
+                )
+            stats_block = ""
+            if stats_parts:
+                stats_block = (
+                    '<!-- wp:html -->\n'
+                    '<div style="background:#1a1a1a;color:#fff;display:flex;justify-content:center;'
+                    'flex-wrap:wrap;gap:0;margin-bottom:1.5rem;">'
+                    + "".join(stats_parts) +
+                    '</div>\n<!-- /wp:html -->\n\n'
+                )
+
+            date_line = f'<p style="color:#888;font-size:.85rem;text-transform:uppercase;letter-spacing:.1em;">{jdata["date"]}</p>\n\n' if jdata["date"] else ""
+
+            # GPX download button
+            gpx_block = ""
+            gpx_path = path.with_suffix(".gpx")
+            if gpx_path.exists():
+                yield sse({"step": "uploading_gpx"})
+                try:
+                    gpx_media = upload_gpx(wp_url, wp_user, wp_pass, str(gpx_path), gpx_path.name)
+                    gpx_block = (
+                        '\n\n<!-- wp:html -->\n'
+                        '<p style="margin-top:2rem;">'
+                        f'<a href="{gpx_media["url"]}" download style="display:inline-flex;align-items:center;gap:.5rem;'
+                        'background:#1a1a1a;color:#fff;padding:.6rem 1.2rem;border-radius:6px;text-decoration:none;'
+                        'font-size:.9rem;font-family:sans-serif;">'
+                        '&#x1F5FA; Download GPX Route</a></p>\n<!-- /wp:html -->'
+                    )
+                except Exception as e:
+                    print(f"[publish] GPX upload failed: {e}")
 
             gallery_block = (
                 "\n\n<!-- GALLERY_BLOCK_START -->\n" +
@@ -415,7 +489,7 @@ def publish_journal(filename):
                 "\n<!-- GALLERY_BLOCK_END -->"
             ) if uploaded else "\n\n<!-- GALLERY_BLOCK_START -->\n<!-- GALLERY_BLOCK_END -->"
 
-            content = stats_block + "\n\n" + jdata["narrative"] + gallery_block
+            content = map_block + stats_block + date_line + jdata["narrative"] + gpx_block + gallery_block
 
             featured_id = uploaded[0]["id"] if uploaded else None
             post = create_post(wp_url, wp_user, wp_pass, title, content,
