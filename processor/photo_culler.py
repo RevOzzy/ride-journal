@@ -65,8 +65,10 @@ def _score_batch(client: anthropic.Anthropic, photos: list) -> list[dict]:
         )
     })
 
+    import os
+    model = os.environ.get("CULL_MODEL", "claude-sonnet-4-6")
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=512,
         messages=[{"role": "user", "content": content}]
     )

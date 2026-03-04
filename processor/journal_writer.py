@@ -73,8 +73,10 @@ Write a vivid, authentic first-person narrative about this ride — 500-700 word
 
 Format: Return only the narrative text, split into 4-6 paragraphs. Each paragraph should be wrapped in <p> tags. No headers, no title, no markdown."""
 
+    import os
+    model = os.environ.get("NARRATIVE_MODEL", "claude-sonnet-4-6")
     resp = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=1200,
         messages=[{"role": "user", "content": prompt}]
     )
