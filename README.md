@@ -15,6 +15,8 @@ Built for adventure motorcycle riders, but works for any GPS-tracked activity: c
 - **AI narrative** — Claude writes a 500–700 word first-person travel story anchored to what the photos actually captured
 - **Rider notes** — add your own context (place names, events, sequence) to guide the AI narrative
 - **Self-contained HTML output** — photos base64-embedded, fully offline, shareable as a single file
+- **PDF export** — one-click print-to-PDF with a static route map image, clean white layout, and proper page breaks; no extra software needed
+- **GPX download** — cleaned GPX embedded directly in the journal HTML so anyone you share it with can download the route; also available as a named file (`ride-YYYY-MM-DD.gpx`) from the dashboard
 - **Narrative editor** — edit the AI draft in-browser before publishing
 - **WordPress publishing** — upload photos to your media library and publish the post in one flow
 - **Add photos later** — upload additional photos from the road and append them to an existing post's gallery
@@ -91,7 +93,7 @@ This lets you use free or self-hosted models for both photo culling and narrativ
 7. Click **Generate My Ride Journal** — takes 1–3 minutes depending on photo count
 8. Review the **match report** — shows which photos were placed by GPS coordinate vs. timestamp
 9. **Edit the narrative** in-browser if you want to adjust anything
-10. **Download** the HTML file, or **Publish to WordPress**
+10. **Download** the HTML file, **Save as PDF** (print button inside the journal), **Download GPX**, or **Publish to WordPress**
 
 ---
 
@@ -187,6 +189,7 @@ Use a local network connection or Tailscale instead of uploading over a slow rem
 | GPX parsing | gpxpy |
 | Photo EXIF | Pillow + piexif |
 | Interactive map | folium (Leaflet.js) |
+| Static map (PDF) | staticmap |
 | AI (vision + text) | Anthropic Claude API |
 | WordPress | REST API v2 |
 | Output | Self-contained HTML |

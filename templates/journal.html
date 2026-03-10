@@ -231,6 +231,72 @@
       .photo-item:nth-child(5n+1) { grid-column: span 1; aspect-ratio: 4/3; }
       .photo-grid { grid-template-columns: repeat(2, 1fr); }
     }
+
+    /* ── Action toolbar (screen only) ── */
+    .action-bar {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      display: flex;
+      gap: 0.5rem;
+      z-index: 500;
+    }
+    .action-bar a, .action-bar button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.55rem 1rem;
+      border-radius: 6px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      transition: opacity 0.15s;
+    }
+    .action-bar a:hover, .action-bar button:hover { opacity: 0.85; }
+    .btn-pdf  { background: var(--orange); color: white; }
+    .btn-gpx  { background: #2a2a2a; color: #ddd; }
+
+    /* ── Static map for print ── */
+    #static-map-print {
+      display: none;
+      width: 100%;
+      height: 380px;
+      object-fit: cover;
+    }
+
+    /* ── Print styles ── */
+    @media print {
+      .action-bar { display: none !important; }
+      #lightbox    { display: none !important; }
+
+      /* Replace interactive map with static image */
+      .map-hero > *:not(#static-map-print) { display: none !important; }
+      #static-map-print {
+        display: block !important;
+        height: 320px;
+      }
+
+      /* Light theme for print */
+      body { background: white; }
+      .stats-bar {
+        background: white;
+        color: #111;
+        border-top: 2px solid #E8521A;
+        border-bottom: 1px solid #ddd;
+      }
+      .stat { border-right-color: #ddd; }
+      .stat .val { color: #E8521A; }
+      .stat .lbl { color: #555; }
+      footer { background: white; color: #888; border-top: 1px solid #ddd; }
+
+      /* Avoid mid-paragraph page breaks */
+      .narrative p { page-break-inside: avoid; }
+      .photo-item   { page-break-inside: avoid; }
+    }
   </style>
 </head>
 <body>
@@ -238,6 +304,9 @@
 <!-- Map -->
 <div class="map-hero">
   {{ map_html | safe }}
+  {% if static_map_b64 %}
+  <img id="static-map-print" src="{{ static_map_b64 }}" alt="Route map" />
+  {% endif %}
 </div>
 
 <!-- Stats bar -->
@@ -295,6 +364,14 @@
 <footer>
   Generated with Ride Journal Generator &nbsp;·&nbsp; {{ date }}
 </footer>
+
+<!-- Action toolbar -->
+<div class="action-bar">
+  {% if gpx_b64 %}
+  <a class="btn-gpx" href="data:application/gpx+xml;base64,{{ gpx_b64 }}" download="ride-{{ date_slug }}.gpx">↓ GPX</a>
+  {% endif %}
+  <button class="btn-pdf" onclick="window.print()">🖨 Save PDF</button>
+</div>
 
 <!-- Lightbox -->
 <div id="lightbox">

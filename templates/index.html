@@ -363,6 +363,7 @@
       <a href="#" id="view-link" class="btn-view" target="_blank">Open Journal</a>
       <a href="#" id="edit-link" class="btn-view" style="background:#444;margin-left:0.75rem">Edit Narrative</a>
       <a href="#" id="publish-link" class="btn-view" style="background:#2a6a2a;margin-left:0.75rem">Publish to WordPress</a>
+      <a href="#" id="gpx-link" class="btn-view" style="background:#1a3a5c;margin-left:0.75rem;display:none">↓ GPX</a>
     </div>
     <div id="match-report" style="margin-top:1.25rem;display:none;">
       <h2>Photo Matching</h2>
@@ -387,6 +388,9 @@
       <li>
         <a href="/download/{{ j.name }}" target="_blank">{{ j.name }}</a>
         &nbsp;<a href="/edit/{{ j.name }}" style="color:#888;font-size:0.8rem">[edit]</a>
+        {% if j.has_gpx %}
+        &nbsp;<a href="/download-gpx/{{ j.name }}" style="color:#5a8fc2;font-size:0.8rem">[gpx]</a>
+        {% endif %}
         {% if j.wp_post_id %}
         &nbsp;<a href="/add-photos/{{ j.name }}" style="color:#6aaa6a;font-size:0.8rem">[add photos]</a>
         &nbsp;<a href="/publish/{{ j.name }}" style="color:#aaa;font-size:0.8rem">[re-publish]</a>
@@ -559,6 +563,12 @@ document.getElementById("journal-form").addEventListener("submit", async functio
           editLink.href = "/edit/" + data.filename;
           const publishLink = document.getElementById("publish-link");
           publishLink.href = "/publish/" + data.filename;
+          if (data.gpx_filename) {
+            const gpxLink = document.getElementById("gpx-link");
+            gpxLink.href = "/download-gpx/" + data.filename;
+            gpxLink.download = "ride-" + (data.date_slug || "track") + ".gpx";
+            gpxLink.style.display = "inline-block";
+          }
         }
       }
     }

@@ -21,6 +21,12 @@ from dotenv import load_dotenv
 import anthropic
 import folium
 
+try:
+    from staticmap import StaticMap, Line as SMapLine
+    _STATICMAP_OK = True
+except ImportError:
+    _STATICMAP_OK = False
+
 from processor.gpx_parser import parse_gpx
 from processor.photo_matcher import match_photos_to_route
 from processor.photo_culler import cull_photos
@@ -115,6 +121,26 @@ def build_folium_map(track_points: list, selected_photos: list) -> str:
     return m._repr_html_()
 
 
+def build_static_map(track_points: list) -> str | None:
+    """Render a static PNG of the route; returns base64 data URI or None on failure."""
+    if not _STATICMAP_OK or not track_points:
+        return None
+    try:
+        sm = StaticMap(900, 380, 10)
+        coords = [(p["lon"], p["lat"]) for p in track_points if "lon" in p and "lat" in p]
+        if len(coords) < 2:
+            return None
+        sm.add_line(SMapLine(coords, "#E8521A", 3))
+        image = sm.render()
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/png;base64,{b64}"
+    except Exception as e:
+        print(f"[app] Static map generation failed: {e}")
+        return None
+
+
 def photo_to_base64_thumb(path: str, max_px: int = 1200) -> str:
     """Resize and encode photo as base64 data URI."""
     from PIL import Image
@@ -140,7 +166,8 @@ def photo_to_base64_thumb(path: str, max_px: int = 1200) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
-def assemble_journal_html(stats, narrative, map_html, selected_photos, output_path):
+def assemble_journal_html(stats, narrative, map_html, selected_photos, output_path,
+                          static_map_b64=None, gpx_b64=None):
     """Render the final self-contained HTML journal."""
     photo_data = []
     for photo in selected_photos:
@@ -167,15 +194,20 @@ def assemble_journal_html(stats, narrative, map_html, selected_photos, output_pa
         h, m = divmod(mins, 60)
         duration_str = f"{h}h {m:02d}m" if h else f"{m}m"
 
+    date_slug = stats["start_time"].strftime("%Y-%m-%d") if stats.get("start_time") else "ride"
+
     rendered = render_template(
         "journal.html",
         date=date_str,
+        date_slug=date_slug,
         distance_miles=stats.get("distance_miles", 0),
         elevation_ft=stats.get("elevation_gain_ft", 0),
         duration=duration_str,
         narrative=narrative,
         map_html=map_html,
         photos=photo_data,
+        static_map_b64=static_map_b64,
+        gpx_b64=gpx_b64,
     )
     output_path.write_text(rendered, encoding="utf-8")
 
@@ -230,7 +262,8 @@ def index():
             wp_post_id = int(wp_id_m.group(1)) if wp_id_m else None
         except Exception:
             wp_post_id = None
-        journals.append({"name": j.name, "wp_post_id": wp_post_id})
+        has_gpx = (OUTPUT_DIR / j.name.replace(".html", ".gpx")).exists()
+        journals.append({"name": j.name, "wp_post_id": wp_post_id, "has_gpx": has_gpx})
     return render_template("index.html", journals=journals)
 
 
@@ -288,12 +321,12 @@ def generate():
 
             yield sse({"step": "build"})
             map_html = build_folium_map(track_points, selected)
+            static_map_b64 = build_static_map(track_points)
 
             ride_date = stats.get("start_time")
             date_slug = ride_date.strftime("%Y-%m-%d") if ride_date else "ride"
             filename = f"journal_{date_slug}_{uuid.uuid4().hex[:6]}.html"
             output_path = OUTPUT_DIR / filename
-            assemble_journal_html(stats, narrative, map_html, selected, output_path)
 
             # Save a stripped GPX (no metadata/author info) alongside the journal
             gpx_out = OUTPUT_DIR / filename.replace(".html", ".gpx")
@@ -314,9 +347,16 @@ def generate():
                 _clean.tracks.append(_t)
             gpx_out.write_text(_clean.to_xml(), encoding="utf-8")
 
+            # Embed the cleaned GPX in the HTML as a data URI download
+            gpx_b64 = base64.b64encode(gpx_out.read_bytes()).decode()
+            assemble_journal_html(stats, narrative, map_html, selected, output_path,
+                                  static_map_b64=static_map_b64, gpx_b64=gpx_b64)
+
             yield sse({
                 "success": True,
                 "filename": filename,
+                "gpx_filename": filename.replace(".html", ".gpx"),
+                "date_slug": date_slug,
                 "stats": {
                     "distance_miles": stats.get("distance_miles"),
                     "elevation_ft": stats.get("elevation_gain_ft"),
@@ -605,6 +645,20 @@ def download(filename):
     if not path:
         return "Journal not found", 404
     return send_file(str(path), mimetype="text/html", as_attachment=False)
+
+
+@app.route("/download-gpx/<filename>")
+@login_required
+def download_gpx(filename):
+    """Serve the .gpx file saved alongside a journal, with a human-readable download name."""
+    gpx_name = filename.replace(".html", ".gpx")
+    path = _safe_path(gpx_name)
+    if not path:
+        return "GPX not found", 404
+    m = re.search(r"journal_(\d{4}-\d{2}-\d{2})", filename)
+    nice_name = f"ride-{m.group(1)}.gpx" if m else "ride.gpx"
+    return send_file(str(path), mimetype="application/gpx+xml",
+                     as_attachment=True, download_name=nice_name)
 
 
 if __name__ == "__main__":
